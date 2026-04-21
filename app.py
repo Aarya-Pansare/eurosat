@@ -14,55 +14,62 @@ app = Flask(__name__)
 # ── Model definition (mirrors training architecture) ──────────────────────────
 
 class ConvBlock(nn.Module):
-    def __init__(self, in_ch, out_ch, stride=1):
+    def __init__(self, in_ch, out_ch, residual=False):
         super().__init__()
+        self.residual = residual and (in_ch == out_ch)
         self.block = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, stride=stride, padding=1, bias=False),
+            nn.Conv2d(in_ch, out_ch, 3, padding=1, bias=False),
             nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
         )
     def forward(self, x):
-        return self.block(x)
+        out = self.block(x)
+        return out + x if self.residual else out
 
-class SpatialAttn(nn.Module):
+class SpatialAttention(nn.Module):
     def __init__(self):
         super().__init__()
-        self.conv = nn.Conv2d(2, 1, 7, padding=3, bias=False)
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
     def forward(self, x):
-        avg = x.mean(dim=1, keepdim=True)
-        mx, _ = x.max(dim=1, keepdim=True)
-        attn = torch.sigmoid(self.conv(torch.cat([avg, mx], dim=1)))
-        return x * attn
+        avg = x.mean(1, keepdim=True)
+        mx, _ = x.max(1, keepdim=True)
+        return x * torch.sigmoid(self.conv(torch.cat([avg, mx], 1)))
 
-class EuroSatCNN(nn.Module):
-    def __init__(self, num_classes=10):
+class EuroSATNet(nn.Module):
+    def __init__(self, num_classes=10, drop=0.4):
         super().__init__()
         self.net = nn.Sequential(
-            ConvBlock(3, 64),            # 0
-            ConvBlock(64, 64),           # 1
-            nn.MaxPool2d(2, 2),          # 2  → 32
-            ConvBlock(64, 128),          # 3
-            ConvBlock(128, 128),         # 4
-            nn.MaxPool2d(2, 2),          # 5  → 16
-            ConvBlock(128, 256),         # 6
-            ConvBlock(256, 256),         # 7
-            ConvBlock(256, 256),         # 8
-            SpatialAttn(),               # 9
-            nn.MaxPool2d(2, 2),          # 10 → 8
-            ConvBlock(256, 512),         # 11
-            ConvBlock(512, 512),         # 12
-            SpatialAttn(),               # 13
-            nn.AdaptiveAvgPool2d(1),     # 14
-            nn.Flatten(),                # 15
-            nn.Dropout(0.5),             # 16
-            nn.Linear(512, 256),         # 17
-            nn.ReLU(inplace=True),       # 18
-            nn.Dropout(0.3),             # 19
-            nn.Linear(256, num_classes), # 20
+            # stage 1 — 64×64 → 32×32
+            ConvBlock(3,   64),
+            ConvBlock(64,  64,  residual=True),
+            nn.MaxPool2d(2),
+            # stage 2 — 32×32 → 16×16
+            ConvBlock(64,  128),
+            ConvBlock(128, 128, residual=True),
+            nn.MaxPool2d(2),
+            # stage 3 — 16×16 → 8×8
+            ConvBlock(128, 256),
+            ConvBlock(256, 256, residual=True),
+            ConvBlock(256, 256, residual=True),
+            SpatialAttention(),
+            nn.MaxPool2d(2),
+            # stage 4 — 8×8 → 4×4
+            ConvBlock(256, 512),
+            ConvBlock(512, 512, residual=True),
+            SpatialAttention(),
+            nn.MaxPool2d(2),
+            # head
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(512, 256),
+            nn.GELU(),
+            nn.Dropout(drop),
+            nn.Linear(256, num_classes),
         )
-
     def forward(self, x):
         return self.net(x)
+
+EuroSatCNN = EuroSATNet  # keep name consistent with checkpoint loading below
 
 
 # ── Load checkpoint ───────────────────────────────────────────────────────────
@@ -78,7 +85,7 @@ STD          = checkpoint["std"]
 VAL_ACC      = checkpoint.get("val_acc", None)
 EPOCHS       = checkpoint.get("epochs_trained", None)
 
-model = EuroSatCNN(num_classes=NUM_CLASSES)
+model = EuroSATNet(num_classes=NUM_CLASSES)
 model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
 
