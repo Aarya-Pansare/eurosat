@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TERRAVIEW — Sentinel-2 Land Cover Classification</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  /* ── Variables ─────────────────────────────────────────── */
+  :root {
+    --bg:         #070d0b;
+    --bg2:        #0e1a15;
+    --bg3:        #152018;
+    --border:     #1e3028;
+    --border2:    #254033;
+    --green:      #00e87b;
+    --green2:     #00c264;
+    --green-dim:  #004d2a;
+    --text:       #d4ede2;
+    --text2:      #7aab92;
+    --text3:      #3d6b53;
+    --scan:       rgba(0,232,123,0.04);
+    --rad:        6px;
+  }
+
+  /* ── Reset ─────────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Syne', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* ── Scanline overlay ──────────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  /* ── Grid noise bg ─────────────────────────────────────── */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,232,123,0.02) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,232,123,0.02) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* ── Layout ────────────────────────────────────────────── */
+  .wrap {
+    position: relative; z-index: 1;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 24px 80px;
+  }
+
+  /* ── Header ────────────────────────────────────────────── */
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 28px 0 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .logo-mark {
+    width: 40px; height: 40px;
+    border: 2px solid var(--green);
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    position: relative;
+    animation: pulse-ring 3s ease-in-out infinite;
+  }
+
+  .logo-mark::before {
+    content: '';
+    position: absolute;
+    width: 14px; height: 14px;
+    background: var(--green);
+    border-radius: 50%;
+    animation: pulse-dot 3s ease-in-out infinite;
+  }
+
+  @keyframes pulse-ring {
+    0%,100% { box-shadow: 0 0 0 0 rgba(0,232,123,0.4); }
+    50%      { box-shadow: 0 0 0 8px rgba(0,232,123,0); }
+  }
+  @keyframes pulse-dot {
+    0%,100% { transform: scale(1); opacity: 1; }
+    50%      { transform: scale(0.8); opacity: 0.6; }
+  }
+
+  .logo-text { line-height: 1; }
+  .logo-text h1 { font-size: 22px; font-weight: 800; letter-spacing: 4px; color: var(--green); }
+  .logo-text p  { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--text3); letter-spacing: 2px; margin-top: 3px; }
+
+  .header-stats {
+    display: flex; gap: 20px; flex-wrap: wrap;
+  }
+
+  .stat-chip {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--text2);
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 6px 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  .stat-chip span { color: var(--green); font-weight: 700; }
+
+  /* ── Main grid ─────────────────────────────────────────── */
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-top: 28px;
+  }
+
+  @media(max-width: 860px) {
+    .main-grid { grid-template-columns: 1fr; }
+  }
+
+  /* ── Panel ─────────────────────────────────────────────── */
+  .panel {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--rad);
+    overflow: hidden;
+  }
+
+  .panel-head {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--text3);
+    text-transform: uppercase;
+  }
+
+  .panel-head .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--green);
+  }
+
+  .panel-body { padding: 24px; }
+
+  /* ── Drop Zone ─────────────────────────────────────────── */
+  #drop-zone {
+    border: 2px dashed var(--border2);
+    border-radius: var(--rad);
+    min-height: 280px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    cursor: pointer;
+    transition: all .25s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  #drop-zone:hover,
+  #drop-zone.drag-over {
+    border-color: var(--green);
+    background: rgba(0,232,123,0.04);
+  }
+
+  #drop-zone.has-image { padding: 0; border-style: solid; border-color: var(--border); }
+
+  #preview-img {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    display: none;
+    border-radius: 4px;
+  }
+
+  .drop-hint {
+    text-align: center;
+    pointer-events: none;
+  }
+
+  .drop-icon {
+    font-size: 40px;
+    margin-bottom: 4px;
+    display: block;
+    opacity: 0.6;
+  }
+
+  .drop-hint p { font-size: 14px; color: var(--text2); margin-bottom: 6px; }
+  .drop-hint small { font-family: 'Space Mono', monospace; font-size: 10px; color: var(--text3); letter-spacing: 1px; }
+
+  #file-input { display: none; }
+
+  /* ── Buttons ───────────────────────────────────────────── */
+  .btn-row { display: flex; gap: 10px; margin-top: 16px; }
+
+  .btn {
+    flex: 1;
+    padding: 12px 20px;
+    border: none; border-radius: var(--rad);
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all .2s;
+    font-weight: 700;
+  }
+
+  .btn-primary {
+    background: var(--green);
+    color: #000;
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background: var(--green2);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 20px rgba(0,232,123,0.3);
+  }
+
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  .btn-secondary {
+    background: transparent;
+    color: var(--text2);
+    border: 1px solid var(--border2);
+  }
+  .btn-secondary:hover { border-color: var(--text2); color: var(--text); }
+
+  /* ── Result panel ──────────────────────────────────────── */
+  #result-panel { display: none; }
+
+  #result-hero {
+    background: var(--bg3);
+    border: 1px solid var(--border2);
+    border-radius: var(--rad);
+    padding: 24px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  #result-hero::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 4px;
+    background: var(--result-color, var(--green));
+  }
+
+  .result-icon { font-size: 52px; line-height: 1; }
+  .result-info { flex: 1; }
+  .result-class {
+    font-size: 28px;
+    font-weight: 800;
+    color: var(--result-color, var(--green));
+    letter-spacing: 1px;
+    line-height: 1;
+  }
+  .result-desc { font-size: 13px; color: var(--text2); margin-top: 6px; line-height: 1.5; }
+  .result-conf {
+    font-family: 'Space Mono', monospace;
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--result-color, var(--green));
+    text-align: right;
+    white-space: nowrap;
+  }
+  .result-conf small { font-size: 12px; color: var(--text3); display: block; text-align: right; margin-top: 2px; }
+
+  /* ── Bar chart ─────────────────────────────────────────── */
+  .bars-title {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--text3);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+
+  .bar-item {
+    display: grid;
+    grid-template-columns: 130px 1fr 60px;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+
+  .bar-label {
+    font-size: 12px;
+    color: var(--text2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .bar-label .emoji { font-size: 14px; }
+
+  .bar-track {
+    height: 6px;
+    background: var(--bg3);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.8s cubic-bezier(.23,1,.32,1);
+    width: 0;
+  }
+
+  .bar-pct {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--text2);
+    text-align: right;
+  }
+  .bar-pct.top-bar { color: var(--green); font-weight: 700; }
+
+  /* ── Loading ───────────────────────────────────────────── */
+  #loading {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 60px 0;
+  }
+
+  .scan-line {
+    width: 200px;
+    height: 2px;
+    background: var(--green-dim);
+    border-radius: 1px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .scan-line::after {
+    content: '';
+    position: absolute;
+    left: -40%;
+    top: 0; bottom: 0;
+    width: 40%;
+    background: linear-gradient(90deg, transparent, var(--green), transparent);
+    animation: scan 1.2s linear infinite;
+  }
+
+  @keyframes scan {
+    to { left: 140%; }
+  }
+
+  #loading p {
+    font-family: 'Space Mono', monospace;
+    font-size: 11px;
+    color: var(--text3);
+    letter-spacing: 2px;
+    animation: blink 1.5s step-start infinite;
+  }
+
+  @keyframes blink {
+    50% { opacity: 0; }
+  }
+
+  /* ── Error ─────────────────────────────────────────────── */
+  #error-box {
+    display: none;
+    background: rgba(192,57,43,0.15);
+    border: 1px solid #c0392b;
+    border-radius: var(--rad);
+    padding: 16px 20px;
+    font-family: 'Space Mono', monospace;
+    font-size: 12px;
+    color: #e74c3c;
+    margin-top: 12px;
+  }
+
+  /* ── Classes reference ─────────────────────────────────── */
+  .classes-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+    margin-top: 20px;
+  }
+
+  .class-card {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--rad);
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: border-color .2s;
+  }
+
+  .class-card:hover { border-color: var(--border2); }
+  .class-card .cc-icon { font-size: 22px; }
+  .class-card .cc-info p { font-size: 12px; font-weight: 600; color: var(--text); }
+  .class-card .cc-info small { font-size: 10px; color: var(--text3); font-family: 'Space Mono', monospace; }
+
+  .color-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* ── Section title ─────────────────────────────────────── */
+  .section-title {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 3px;
+    color: var(--text3);
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 10px;
+  }
+
+  .section-title::before {
+    content: '';
+    display: block;
+    width: 16px; height: 2px;
+    background: var(--green);
+  }
+
+  /* ── Uploaded image panel ──────────────────────────────── */
+  #img-display {
+    display: none;
+    margin-top: 14px;
+  }
+
+  #img-display img {
+    width: 100%;
+    border-radius: 4px;
+    border: 1px solid var(--border2);
+    image-rendering: pixelated;
+  }
+
+  .img-meta {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--text3);
+    margin-top: 8px;
+    letter-spacing: 1px;
+  }
+
+  /* ── Responsive ────────────────────────────────────────── */
+  @media(max-width: 600px) {
+    .bar-item { grid-template-columns: 100px 1fr 50px; }
+    .result-conf { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div class="logo-mark"></div>
+      <div class="logo-text">
+        <h1>TERRAVIEW</h1>
+        <p>SENTINEL-2 · EUROSAT · LAND COVER AI</p>
+      </div>
+    </div>
+    <div class="header-stats">
+      {% if val_acc %}
+      <div class="stat-chip">ACCURACY <span>{{ val_acc }}%</span></div>
+      {% endif %}
+      {% if epochs %}
+      <div class="stat-chip">EPOCHS <span>{{ epochs }}</span></div>
+      {% endif %}
+      <div class="stat-chip">CLASSES <span>{{ num_classes }}</span></div>
+      <div class="stat-chip">INPUT <span>{{ img_size }}×{{ img_size }}</span></div>
+    </div>
+  </header>
+
+  <!-- Main grid -->
+  <div class="main-grid">
+
+    <!-- LEFT: Upload + result -->
+    <div style="display:flex;flex-direction:column;gap:20px;">
+
+      <!-- Upload panel -->
+      <div class="panel">
+        <div class="panel-head">
+          <div class="dot"></div>
+          SATELLITE IMAGE INPUT
+        </div>
+        <div class="panel-body">
+          <div id="drop-zone">
+            <img id="preview-img" alt="preview">
+            <div class="drop-hint" id="drop-hint">
+              <span class="drop-icon">🛰️</span>
+              <p>Drop Sentinel-2 image here</p>
+              <small>PNG · JPG · TIFF · 64×64px recommended</small>
+            </div>
+          </div>
+          <input type="file" id="file-input" accept="image/*">
+
+          <div id="error-box"></div>
+
+          <div class="btn-row">
+            <button class="btn btn-secondary" onclick="document.getElementById('file-input').click()">
+              Browse
+            </button>
+            <button class="btn btn-primary" id="classify-btn" disabled onclick="classify()">
+              ▶ Classify
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Image analysis display -->
+      <div class="panel" id="img-panel" style="display:none;">
+        <div class="panel-head">
+          <div class="dot"></div>
+          ANALYSED FRAME
+        </div>
+        <div class="panel-body">
+          <div id="img-display">
+            <img id="result-img" alt="classified image">
+            <div class="img-meta" id="img-meta"></div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT: Results -->
+    <div class="panel">
+      <div class="panel-head">
+        <div class="dot"></div>
+        CLASSIFICATION OUTPUT
+      </div>
+      <div class="panel-body">
+
+        <!-- Loading -->
+        <div id="loading">
+          <div class="scan-line"></div>
+          <p>ANALYSING SATELLITE DATA...</p>
+        </div>
+
+        <!-- Placeholder -->
+        <div id="placeholder" style="text-align:center; padding:60px 0; color:var(--text3);">
+          <div style="font-size:48px; margin-bottom:16px; opacity:.4;">🌍</div>
+          <p style="font-family:'Space Mono',monospace;font-size:11px;letter-spacing:2px;">AWAITING INPUT</p>
+          <p style="font-size:12px;margin-top:8px;color:var(--text3);">Upload a satellite image to begin analysis</p>
+        </div>
+
+        <!-- Result -->
+        <div id="result-panel">
+          <div id="result-hero" style="--result-color: #00e87b">
+            <div class="result-icon" id="r-icon">🌾</div>
+            <div class="result-info">
+              <div class="result-class" id="r-class">AnnualCrop</div>
+              <div class="result-desc" id="r-desc">Description here</div>
+            </div>
+            <div>
+              <div class="result-conf" id="r-conf">98.2%</div>
+              <small class="result-conf" style="font-size:10px;color:var(--text3);">CONFIDENCE</small>
+            </div>
+          </div>
+
+          <p class="bars-title">ALL CLASS PROBABILITIES</p>
+          <div id="bars-container"></div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Classes reference -->
+  <div style="margin-top:32px;">
+    <div class="section-title">EUROSAT CLASS REFERENCE</div>
+    <div class="classes-grid">
+      {% for name in class_names %}
+      {% set meta = class_meta[name] %}
+      <div class="class-card">
+        <span class="cc-icon">{{ meta.icon }}</span>
+        <div class="cc-info">
+          <p>{{ name }}</p>
+          <small style="color:{{ meta.color }}">██ {{ meta.color }}</small>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const dropZone      = document.getElementById('drop-zone');
+  const fileInput     = document.getElementById('file-input');
+  const previewImg    = document.getElementById('preview-img');
+  const dropHint      = document.getElementById('drop-hint');
+  const classifyBtn   = document.getElementById('classify-btn');
+  const loading       = document.getElementById('loading');
+  const placeholder   = document.getElementById('placeholder');
+  const resultPanel   = document.getElementById('result-panel');
+  const errorBox      = document.getElementById('error-box');
+
+  let selectedFile = null;
+
+  // ── Drag & drop ────────────────────────────────────────────
+  dropZone.addEventListener('click', () => fileInput.click());
+
+  dropZone.addEventListener('dragover', e => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) loadFile(file);
+  });
+
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) loadFile(fileInput.files[0]);
+  });
+
+  function loadFile(file) {
+    selectedFile = file;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      previewImg.src = ev.target.result;
+      previewImg.style.display = 'block';
+      dropHint.style.display   = 'none';
+      dropZone.classList.add('has-image');
+      classifyBtn.disabled = false;
+    };
+    reader.readAsDataURL(file);
+    hideError(); hideResult();
+  }
+
+  // ── Classify ───────────────────────────────────────────────
+  async function classify() {
+    if (!selectedFile) return;
+
+    classifyBtn.disabled = true;
+    showLoading();
+    hideResult(); hideError();
+
+    const fd = new FormData();
+    fd.append('file', selectedFile);
+
+    try {
+      const res  = await fetch('/predict', { method: 'POST', body: fd });
+      const data = await res.json();
+
+      if (data.error) { showError(data.error); return; }
+
+      renderResult(data);
+    } catch(err) {
+      showError('Network error: ' + err.message);
+    } finally {
+      classifyBtn.disabled = false;
+      hideLoading();
+    }
+  }
+
+  function renderResult(data) {
+    // hero
+    document.getElementById('result-hero').style.setProperty('--result-color', data.top_color);
+    document.getElementById('r-icon').textContent  = data.top_icon;
+    document.getElementById('r-class').textContent = data.top_class;
+    document.getElementById('r-desc').textContent  = data.top_desc;
+    document.getElementById('r-conf').textContent  = data.top_confidence + '%';
+
+    // bars
+    const container = document.getElementById('bars-container');
+    container.innerHTML = '';
+
+    data.all_results.forEach((r, i) => {
+      const isTop = i === 0;
+      const item = document.createElement('div');
+      item.className = 'bar-item';
+      item.innerHTML = `
+        <div class="bar-label">
+          <span class="emoji">${r.icon}</span>
+          <span>${r.class}</span>
+        </div>
+        <div class="bar-track">
+          <div class="bar-fill" id="fill-${i}"
+               style="background:${isTop ? r.color : 'var(--border2)'}; width:0%;"></div>
+        </div>
+        <div class="bar-pct ${isTop ? 'top-bar' : ''}">${r.confidence}%</div>
+      `;
+      container.appendChild(item);
+      // animate after append
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          document.getElementById(`fill-${i}`).style.width = r.confidence + '%';
+        }, 50 + i * 40);
+      });
+    });
+
+    // show analysed image
+    const imgPanel = document.getElementById('img-panel');
+    const resultImg = document.getElementById('result-img');
+    const imgMeta   = document.getElementById('img-meta');
+    if (data.image_b64) {
+      resultImg.src = 'data:image/png;base64,' + data.image_b64;
+      imgMeta.textContent = `FILE: ${selectedFile.name}  ·  SIZE: ${(selectedFile.size/1024).toFixed(1)} KB`;
+      document.getElementById('img-display').style.display = 'block';
+      imgPanel.style.display = 'block';
+    }
+
+    placeholder.style.display   = 'none';
+    resultPanel.style.display   = 'block';
+  }
+
+  function showLoading()  { loading.style.display = 'flex'; placeholder.style.display = 'none'; }
+  function hideLoading()  { loading.style.display = 'none'; }
+  function hideResult()   { resultPanel.style.display = 'none'; }
+  function showError(msg) { errorBox.style.display = 'block'; errorBox.textContent = '⚠ ' + msg; hideLoading(); }
+  function hideError()    { errorBox.style.display = 'none'; }
+</script>
+</body>
+</html>
