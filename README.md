@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # TERRAVIEW — Sentinel-2 Land Cover Classification
 
 A web application for classifying land cover from Sentinel-2 satellite imagery using your trained EuroSAT CNN model.
@@ -48,3 +49,6 @@ curl -X POST http://localhost:5000/predict \
 - Input size: 64×64 RGB
 - Validation accuracy: ~98%
 - Classes: 10
+=======
+# data_science
+>>>>>>> b52790083623536c1abc2b13c58ac040bb052277
